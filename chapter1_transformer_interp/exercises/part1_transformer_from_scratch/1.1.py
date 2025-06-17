@@ -326,16 +326,28 @@ class Attention(nn.Module):
             + self.b_V
         )
     
-        # Calculate attention scores, then scale and mask, and apply softmax to get probabilities
-        attn_scores = ...
-        attn_scores_masked = ...
-        attn_pattern = ...
+
+        # Calculate attention scores by taking the dot product of q (batch posn_Q nheads d_head) and k (batch posn_K nheads d_head) along the d_head dimension. This gives us a tensor of shape (batch, nheads, posn_Q, posn_K), where each element represents the attention matrix 
+        # # einsum note: Any dimension name that appears in the input strings (left of ->) but is OMITTED from the output string (right of ->) is the dimension that gets multiplied and summed over.
+        attn_scores = einops.einsum(
+            q, k, "batch posn_Q nheads d_head, batch posn_K nheads d_head -> batch nheads posn_Q posn_K"
+            )
+        
+        # divide every score in attn_scores by sqrt(d_head) to scale the scores to stabilize training process ("Attention Is All You Need" paper). As d_head increases, the variance of the dot product increases, so we divide by sqrt(d_head) to keep the variance of the scores at 1. Then apply causal mask to the attention scores to prevent attending to future tokens.
+        attn_scores_masked = self.apply_causal_mask(attn_scores / self.cfg.d_head**0.5)
+
+        # apply softmax function to the last dimension (posn_K) of the masked attention scores
+        attn_pattern = attn_scores_masked.softmax(-1)
 
         # Take weighted sum of value vectors, according to attention probabilities
-        z = ...
+        z = einops.einsum(
+            v, attn_pattern, "batch posn_K nheads d_head, batch nheads posn_Q posn_K -> batch posn_Q nheads d_head"
+        )
 
         # Calculate output (by applying matrix W_O and summing over heads, then adding bias b_O)
-        attn_out = ...
+        attn_out = (
+            einops.einsum(z, self.W_O, "batch posn_Q nheads d_head, nheads d_head d_model -> batch posn_Q d_model") + self.b_O
+        )
         return attn_out
 
     def apply_causal_mask(
@@ -355,3 +367,21 @@ class Attention(nn.Module):
 tests.test_causal_mask(Attention.apply_causal_mask)
 rand_float_test(Attention, [2, 4, 768])
 load_gpt2_test(Attention, reference_gpt2.blocks[0].attn, cache["normalized", 0, "ln1"])
+# %%
+class MLP(nn.Module):
+    def __init__(self, cfg: Config):
+        super().__init__()
+        self.cfg = cfg
+        self.W_in = nn.Parameter(t.empty((cfg.d_model, cfg.d_mlp)))
+        self.W_out = nn.Parameter(t.empty((cfg.d_mlp, cfg.d_model)))
+        self.b_in = nn.Parameter(t.zeros((cfg.d_mlp)))
+        self.b_out = nn.Parameter(t.zeros((cfg.d_model)))
+        nn.init.normal_(self.W_in, std=self.cfg.init_range)
+        nn.init.normal_(self.W_out, std=self.cfg.init_range)
+
+    def forward(self, normalized_resid_mid: Float[Tensor, "batch posn d_model"]) -> Float[Tensor, "batch posn d_model"]:
+        # 
+
+
+rand_float_test(MLP, [2, 4, 768])
+load_gpt2_test(MLP, reference_gpt2.blocks[0].mlp, cache["normalized", 0, "ln2"])
